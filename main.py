@@ -1,14 +1,18 @@
 # main.py
 # ITeach Academy Registration Bot (no DB) — direct admin notifications
-# For local testing: BOT_TOKEN and ADMIN_ID are embedded per your request.
+# Local-friendly: BOT_TOKEN and ADMIN_ID are embedded but can be overridden by environment variables.
 
+import os
 import re
 import logging
 import html
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
-from zoneinfo import ZoneInfo
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 
 from telegram import (
     Update,
@@ -30,15 +34,16 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 
 # ----------------------- Config -----------------------
-BOT_TOKEN = "7832412035:AAFVc6186iqlNE_HS60u11tdCzC8pvCQ02c"
-ADMIN_ID = 6427405038
+# You can keep these hardcoded for local testing, or set BOT_TOKEN / ADMIN_ID env variables.
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7832412035:AAFVc6186iqlNE_HS60u11tdCzC8pvCQ02c")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "6427405038"))
 
 # ----------------------- Logging & Timezone -----------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger("iteach_bot")
 
 try:
-    TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
+    TASHKENT_TZ = ZoneInfo("Asia/Tashkent") if ZoneInfo else None
 except Exception:
     TASHKENT_TZ = None
 
@@ -163,14 +168,12 @@ def kb_edit_menu(course_key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 # ----------------------- Validation -----------------------
-# Looser name validation: require 2-5 words, each at least 2 letters, allow Unicode letters
 def valid_full_name(s: str) -> bool:
     s = s.strip()
     parts = s.split()
     if not (2 <= len(parts) <= 5):
         return False
     for p in parts:
-        # require at least 2 unicode letters in each part
         letters = [ch for ch in p if ch.isalpha()]
         if len(letters) < 2:
             return False
@@ -185,9 +188,7 @@ def valid_age(s: str) -> bool:
 PHONE_REGEX = re.compile(r"^\+998\d{9}$")
 
 def normalize_phone(text: str) -> Optional[str]:
-    # remove all non-digit/plus characters, keep leading +
     t = text.strip()
-    # keep leading + if present, then digits
     if t.startswith("+"):
         t = "+" + re.sub(r"[^\d]", "", t[1:])
     else:
@@ -232,8 +233,12 @@ def build_admin_text(d: Dict[str, Any], u) -> str:
     age = esc(d.get("age", ""))
     phone = esc(d.get("phone", ""))
 
-    username = esc(f"@{u.username}") if u.username else esc("@None")
-    tnow = datetime.now(TASHKENT_TZ).strftime("%Y-%m-%d %H:%M:%S") if TASHKENT_TZ else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    username = esc(f"@{u.username}") if getattr(u, "username", None) else esc("@None")
+    tnow = (
+        datetime.now(TASHKENT_TZ).strftime("%Y-%m-%d %H:%M:%S")
+        if TASHKENT_TZ
+        else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    )
 
     lines = [
         "🔔 <b>Yangi o‘quvchi ro‘yxatdan o‘tdi</b>",
@@ -247,7 +252,7 @@ def build_admin_text(d: Dict[str, Any], u) -> str:
         lines.append(f"📊 <b>Daraja:</b> {level_label}")
 
     lines += [
-        f"🆔 <b>Telegram ID:</b> {esc(u.id)}",
+        f"🆔 <b>Telegram ID:</b> {esc(getattr(u, 'id', ''))}",
         f"👤 <b>Username:</b> {username}",
         f"📅 <b>Sana:</b> {tnow} (Asia/Tashkent)",
     ]
@@ -267,7 +272,8 @@ async def goto_courses(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=kb_courses(), parse_mode=ParseMode.HTML)
     context.user_data["step"] = "choose_course"
 
-async def goto_levels(query, context):
+async def goto_levels(query, context: ContextTypes.DEFAULT_TYPE):
+    # query is a CallbackQuery object
     await query.edit_message_text(
         "📊 Iltimos, <b>darajangizni</b> tanlang:",
         reply_markup=kb_levels(),
@@ -275,7 +281,7 @@ async def goto_levels(query, context):
     )
     context.user_data["step"] = "choose_level"
 
-async def goto_sections(query, context):
+async def goto_sections(query, context: ContextTypes.DEFAULT_TYPE):
     course_key = context.user_data.get("course_key")
     await query.edit_message_text(
         "🗂 Iltimos, <b>bo‘lim</b>ni tanlang:",
@@ -543,3 +549,22 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ----------------------- App bootstrap ------------
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Commands
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cancel", cancel_cmd))
+
+    # Callbacks
+    app.add_handler(CallbackQueryHandler(cb_handler))
+
+    # Messages
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_handler(MessageHandler(filters.CONTACT, contact_handler))
+
+    logger.info("Bot is running...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
